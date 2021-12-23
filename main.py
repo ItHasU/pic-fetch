@@ -23,7 +23,7 @@ def clean(text):
 
 def error_cb(mm: MailManager, body: str) -> None:
     print("ERROR: " + body)
-    raise Exception(body)
+    mm.send("Error message", body)
 
 ###############################################################################
 # Read configuration file #####################################################
@@ -38,5 +38,4 @@ reader = MailManager(config)
 reader.register_action("error", error_cb)
 
 reader.connect()
-messages = reader.fetch()
-print("Found %d messages" % len(messages))
+reader.process_unread()

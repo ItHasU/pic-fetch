@@ -62,18 +62,19 @@ class MailManager:
         # authenticate
         self._imap.login(self._imap_username, self._imap_password)
 
-    def fetch(self) -> list[email.message.EmailMessage]:
+    def process_unread(self) -> list[email.message.EmailMessage]:
         """
-        Fetch emails from the IMAP server. 
+        Fetch unread emails from the IMAP server. 
         Execute any callback registered for the subject of the email.
+        If the subject does not match any callback, execute the default callback.
 
-        If no action is registered for the subject of the email, the email is ignored.
+        If the mail is well processed, it is marked as read.
         """
         # Prepare result
         result = []
         # select a mailbox (in this case, the inbox mailbox)
         # use imap.list() to get the list of mailboxes
-        retcode, messages = self._imap.select("INBOX", readonly=False) # Will mark mail as read
+        retcode, messages = self._imap.select("INBOX", readonly=True) # Will not mark mail as read
         if retcode != "OK":
             print("ERROR: Unable to open mailbox")
             return
@@ -89,6 +90,7 @@ class MailManager:
         print(f"Will process {len(mail_ids)} email(s)")
 
         # Read emails
+        mail_to_mark_as_read = []
         for mail_id in mail_ids:
             # fetch the email body (RFC822) for the given ID
             status, data = self._imap.fetch(mail_id, "(RFC822)")
@@ -105,26 +107,30 @@ class MailManager:
             sender = email_body["From"]
 
             potential_action = subject.lower()
-            if potential_action in self._callbacks:
-                print(f"Executing callback for subject {subject}...")
-                try:
+
+            try:
+                if potential_action in self._callbacks:
+                    print(f"Executing callback for subject {subject}...")
                     content = quopri.decodestring(email_body.get_payload()).decode("utf-8")
                     self._callbacks[potential_action](self, content)
-                except Exception as e:
-                    # If action's callback fail, log error, but continue
-                    print(f"Error while executing callback for action {potential_action}: {e}")
-                    self.send(f"Error while executing callback for action {potential_action} from {sender}", str(e))
-            elif self._default_callback is not None:
-                try:
+                elif self._default_callback is not None:
                     self._default_callback(self, email_body)
-                except Exception as e:
-                    # If default callback fail, log error, but continue
-                    print(f"Error while executing default callback: {e}")
-                    self.send(f"Error while executing default callback from {sender}", str(e))
-            else:
-                print("Email ignored %s from %s" % (subject, sender))
+                else:
+                    print("Email ignored %s from %s" % (subject, sender))
+                    continue
+            except Exception as e:
+                # If callback failed, log error, then continue
+                print(f"Error while executing callback for action {potential_action}: {e}")
+                self.send(f"Error while executing callback for action {potential_action} from {sender}", str(e))
+                continue
 
-        return result
+            # Callback was successfull, mark email as read
+            mail_to_mark_as_read.append(mail_id)
+
+        # Mark emails as read
+        retcode, messages = self._imap.select("INBOX", readonly=False)
+        for mail_id in mail_to_mark_as_read:
+            self._imap.store(mail_id, '+FLAGS', '\Seen')
 
     def send(self, subject: str, body: str) -> None:
         """
