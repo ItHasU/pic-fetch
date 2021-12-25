@@ -1,5 +1,6 @@
 import configparser
 import email
+from email import message
 from email.header import decode_header
 import imaplib
 import smtplib
@@ -37,10 +38,10 @@ class MailManager:
         self._imap_username = imap_config[PARAMS_USER]
         self._imap_password = imap_config[PARAMS_PASS]
 
-    def register_action(self, subject: str, callback: Callable[['MailManager', str], None]) -> None:
+    def register_action(self, subject: str, callback: Callable[['MailManager', email.message.EmailMessage], None]) -> None:
         """
         Register a callback function to be called when a new email with given subject is received.
-        The callback function will receive the email body as a string.
+        The callback function will receive the email body.
         """
         if subject in self._callbacks:
             raise Exception("Callback already registered for subject %s" % subject)
@@ -49,7 +50,7 @@ class MailManager:
     def register_default(self, callback: Callable[['MailManager', email.message.EmailMessage], None]) -> None:
         """
         Register a callback function to be called when a new email is received.
-        The callback function will receive the email body as a string.
+        The callback function will receive the email body.
         """
         self._default_callback = callback
 
@@ -62,7 +63,7 @@ class MailManager:
         # authenticate
         self._imap.login(self._imap_username, self._imap_password)
 
-    def process_unread(self) -> list[email.message.EmailMessage]:
+    def process_unread(self) -> None:
         """
         Fetch unread emails from the IMAP server. 
         Execute any callback registered for the subject of the email.
@@ -70,8 +71,6 @@ class MailManager:
 
         If the mail is well processed, it is marked as read.
         """
-        # Prepare result
-        result = []
         # select a mailbox (in this case, the inbox mailbox)
         # use imap.list() to get the list of mailboxes
         retcode, messages = self._imap.select("INBOX", readonly=True) # Will not mark mail as read
@@ -111,8 +110,7 @@ class MailManager:
             try:
                 if potential_action in self._callbacks:
                     print(f"Executing callback for subject {subject}...")
-                    content = quopri.decodestring(email_body.get_payload()).decode("utf-8")
-                    self._callbacks[potential_action](self, content)
+                    self._callbacks[potential_action](self, email_body)
                 elif self._default_callback is not None:
                     self._default_callback(self, email_body)
                 else:
@@ -121,7 +119,7 @@ class MailManager:
             except Exception as e:
                 # If callback failed, log error, then continue
                 print(f"Error while executing callback for action {potential_action}: {e}")
-                self.send(f"Error while executing callback for action {potential_action} from {sender}", str(e))
+                self.send_admin(f"Error while executing callback for action {potential_action} from {sender}", str(e))
                 continue
 
             # Callback was successfull, mark email as read
@@ -132,9 +130,12 @@ class MailManager:
         for mail_id in mail_to_mark_as_read:
             self._imap.store(mail_id, '+FLAGS', '\Seen')
 
-    def send(self, subject: str, body: str) -> None:
+    def get_email_content(self, email_body: email.message.EmailMessage) -> str:
+        return quopri.decodestring(email_body.get_payload()).decode("utf-8")
+
+    def send_admin(self, subject: str, body: str) -> None:
         """
-        Send an email to the SMTP server.
+        Send an email to the admin.
         """
         try:
             # create message
@@ -143,6 +144,33 @@ class MailManager:
             msg["From"] = self._imap_username
             msg["To"] = self._admin_email
             msg.set_content(body)
+
+            # send the message
+            smtp = smtplib.SMTP(self._smtp_server)
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.login(self._imap_username, self._imap_password)
+            smtp.send_message(msg)
+            smtp.quit()
+        except Exception as e:
+            print(f"Error while sending email: {e}")
+
+    def reply(self, email_body: email.message.EmailMessage, content: str) -> None:
+        """
+        Send an email as a reply to the sender of the given email.
+        """
+        try:
+            message_id = email_body["Message-Id"]
+
+            # create message
+            msg = email.message.EmailMessage()
+            msg["Subject"] = "Re: " + email_body["Subject"]
+            msg["From"] = self._imap_username
+            msg["To"] = email_body["From"]
+            if message_id is not None:
+                msg["In-Reply-To"] = message_id
+                msg["References"] = message_id
+            msg.set_content(content)
 
             # send the message
             smtp = smtplib.SMTP(self._smtp_server)
