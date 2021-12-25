@@ -6,6 +6,7 @@ import imaplib
 import smtplib
 from typing import Callable
 import quopri
+import sqlite3
 
 PARAMS_SERVER = "Server"
 PARAMS_USER = "Username"
@@ -13,6 +14,9 @@ PARAMS_PASS = "Password"
 
 PARAMS_IMAP_MAX_MESSAGES = "MaxMessagesCount"
 PARAMS_ADMIN_EMAIL = "email"
+
+USER_WHITELIST = 1
+USER_BLACKLIST = 2
 
 # This class provides all the function necessary to read/send emails.
 # It is initialized from a configuration file (by default config.ini)
@@ -35,8 +39,18 @@ class MailManager:
         # Read smtp configuration
         smtp_config = config["SMTP"]
         self._smtp_server = smtp_config[PARAMS_SERVER]
-        self._imap_username = imap_config[PARAMS_USER]
-        self._imap_password = imap_config[PARAMS_PASS]
+        self._smtp_username = imap_config[PARAMS_USER]
+        self._smtp_password = imap_config[PARAMS_PASS]
+
+        # Configuration in SQLite database
+        sql_config = config["WHITELIST"]
+        self.db = sqlite3.connect(sql_config["filename"])
+        self._init_db()
+
+    def _init_db(self):
+        c = self.db.cursor()
+        c.execute(f"CREATE TABLE IF NOT EXISTS whitelist (email TEXT COLLATE NOCASE)")
+        self.db.commit()
 
     def register_action(self, subject: str, callback: Callable[['MailManager', email.message.EmailMessage], None]) -> None:
         """
@@ -105,7 +119,7 @@ class MailManager:
             subject = email_body["Subject"]
             sender = email_body["From"]
 
-            potential_action = subject.lower()
+            potential_action = subject.lower().replace(" ", "_")
 
             try:
                 if potential_action in self._callbacks:
@@ -146,12 +160,7 @@ class MailManager:
             msg.set_content(body)
 
             # send the message
-            smtp = smtplib.SMTP(self._smtp_server)
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.login(self._imap_username, self._imap_password)
-            smtp.send_message(msg)
-            smtp.quit()
+            self._post(msg)
         except Exception as e:
             print(f"Error while sending email: {e}")
 
@@ -173,11 +182,74 @@ class MailManager:
             msg.set_content(content)
 
             # send the message
+            self._post(msg)
+        except Exception as e:
+            print(f"Error while sending email: {e}")
+
+    def send(self, to: str, subject: str, body: str) -> None:
+        """
+        Send an email to the given recipient.
+        """
+        try:
+            # create message
+            msg = email.message.EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = self._smtp_username
+            msg["To"] = to
+            msg.set_content(body)
+
+            # send the message
+            self._post(msg)
+        except Exception as e:
+            print(f"Error while sending email: {e}")
+    
+    def _post(self, message: email.message.EmailMessage) -> None:
+        """
+        Send a mail using the SMTP server.
+        """
+        try:
             smtp = smtplib.SMTP(self._smtp_server)
             smtp.ehlo()
             smtp.starttls()
-            smtp.login(self._imap_username, self._imap_password)
-            smtp.send_message(msg)
+            smtp.login(self._smtp_username, self._smtp_password)
+            smtp.send_message(message)
             smtp.quit()
         except Exception as e:
             print(f"Error while sending email: {e}")
+
+    # Whitelist
+
+    def whitelist_has(self, email) -> bool:
+        """
+        Check if the given email is in the whitelist.
+        """
+        cur = self.db.cursor()
+        cur.execute(f"SELECT email FROM whitelist WHERE email='{email}';")
+        result = cur.fetchall()
+        if len(result) == 0:
+            return False
+        return True
+    
+    def whitelist_add(self, email) -> None:
+        """
+        Add the given email to the whitelist.
+        """
+        cur = self.db.cursor()
+        cur.execute(f"INSERT INTO whitelist VALUES ('{email}')")
+        self.db.commit()
+
+    def whitelist_remove(self, email) -> None:
+        """
+        Remove the given email from the whitelist.
+        """
+        cur = self.db.cursor()
+        cur.execute(f"DELETE FROM whitelist WHERE email='{email}';")
+        self.db.commit()
+
+    # Admin
+
+    def is_admin(self, email) -> bool:
+        """
+        Check if the given email is an admin.
+        """
+        return self._admin_email.lower() == self._imap_username.lower()
