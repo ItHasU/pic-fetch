@@ -18,25 +18,36 @@ def clean(text):
 ###############################################################################
 
 def whitelist_add_cb(mm: MailManager, message: email.message.EmailMessage) -> None:
-    email = message["From"]
-    if not mm.is_admin(email):
-        mm.reply(message, "You are not allowed to do that")
-        raise Exception("Not allowed")
+    if not mm.is_sender_admin(message):
+        raise Exception(f"Not allowed: Whitelist add from {message['From']}")
 
-    email_to_add = mm.get_email_content(message).split()[0]
+    content = mm.get_email_content(message)
+    email_to_add = content.split(" ")[0].strip()
+    print(f"Adding {email_to_add} to whitelist...")
     mm.whitelist_add(email_to_add)
     mm.reply(message, f"{email_to_add} added to whitelist")
-    mm.send()
+    mm.send(email_to_add, "You have been added to the whitelist", f"You can now send pictures to {mm._imap_username}")
 
 def whitelist_rm_cb(mm: MailManager, message: email.message.EmailMessage) -> None:
-    print("Whitelist remove")
-    email = message["From"]
-    mm.whitelist_remove(email)
-    mm.reply(message, f"{email} removed from whitelist")
+    if not mm.is_sender_admin(message):
+        raise Exception(f"Not allowed: Whitelist remove from {message['From']}")
+
+    content = mm.get_email_content(message)
+    email_to_remove = content.split(" ")[0].strip()
+    print(f"Removing {email_to_remove} from whitelist...")
+    mm.whitelist_remove(email_to_remove)
+    mm.reply(message, f"{email_to_remove} removed from whitelist")
+    mm.send(email_to_remove, "You have been removed from the whitelist", f"You can no longer send pictures to {mm._imap_username}")
 
 def ping_cb(mm: MailManager, message: email.message.EmailMessage) -> None:
-    print("PING from: " + message["From"])
-    mm.send_admin("Notification", f"Received a ping from {message['From']}")
+    sender = email['From']
+    if not mm.whitelist_has(sender):
+        # not in whitelist, ignore mail, but do not fail
+        # we don't want to reply to the sender or spam the admin
+        print(f"Ignoring mail from {message['From']}")
+        return
+
+    print("PING from: " + sender)
     mm.reply(message, f"Pong")
 
 def default_cb(mm: MailManager, message: email.message.EmailMessage) -> None:
@@ -59,6 +70,7 @@ config.read("config.ini")
 
 reader = MailManager(config)
 reader.register_action("whitelist_add", whitelist_add_cb)
+reader.register_action("whitelist_remove", whitelist_add_cb)
 reader.register_action("ping", ping_cb)
 reader.register_default(default_cb)
 

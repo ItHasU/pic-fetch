@@ -7,6 +7,7 @@ import smtplib
 from typing import Callable
 import quopri
 import sqlite3
+import re
 
 PARAMS_SERVER = "Server"
 PARAMS_USER = "Username"
@@ -145,7 +146,18 @@ class MailManager:
             self._imap.store(mail_id, '+FLAGS', '\Seen')
 
     def get_email_content(self, email_body: email.message.EmailMessage) -> str:
-        return quopri.decodestring(email_body.get_payload()).decode("utf-8")
+        content = ""
+        # Read the payload, it can be either a text or a list of message parts
+        payload = email_body.get_payload()
+        # Is this message multipart?
+        if isinstance(payload, list):
+            # If so, get the first part
+            for payload_part in payload:
+                if payload_part.get_content_type() == "text/plain":
+                    content += payload_part.get_payload()
+        else:
+            content += quopri.decodestring(payload).decode("utf-8")
+        return content
 
     def send_admin(self, subject: str, body: str) -> None:
         """
@@ -219,37 +231,50 @@ class MailManager:
 
     # Whitelist
 
-    def whitelist_has(self, email) -> bool:
+    def whitelist_has(self, email: str) -> bool:
         """
         Check if the given email is in the whitelist.
         """
         cur = self.db.cursor()
-        cur.execute(f"SELECT email FROM whitelist WHERE email='{email}';")
+        cur.execute(f"SELECT email FROM whitelist WHERE email='{filter_email(email)}';")
         result = cur.fetchall()
         if len(result) == 0:
             return False
         return True
     
-    def whitelist_add(self, email) -> None:
+    def whitelist_add(self, email: str) -> None:
         """
         Add the given email to the whitelist.
         """
         cur = self.db.cursor()
-        cur.execute(f"INSERT INTO whitelist VALUES ('{email}')")
+        cur.execute(f"INSERT INTO whitelist ('email') VALUES ('{filter_email(email)}');")
         self.db.commit()
 
-    def whitelist_remove(self, email) -> None:
+    def whitelist_remove(self, email: str) -> None:
         """
         Remove the given email from the whitelist.
         """
         cur = self.db.cursor()
-        cur.execute(f"DELETE FROM whitelist WHERE email='{email}';")
+        cur.execute(f"DELETE FROM whitelist WHERE email='{filter_email(email)}';")
         self.db.commit()
 
     # Admin
 
-    def is_admin(self, email) -> bool:
+    def is_sender_admin(self, email: email.message.EmailMessage) -> bool:
         """
-        Check if the given email is an admin.
+        Check if the given email's sender is an admin.
         """
-        return self._admin_email.lower() == self._imap_username.lower()
+        sender = email["From"]
+        return filter_email(self._admin_email) == filter_email(sender)
+
+def filter_email(email: str) -> str:
+    """
+    Return only the email address from the given address.
+    For example: "John Doe <john@doe.com>" -> "john@doe.com"
+    """
+    match = re.search(r"<(.*)>", email)
+    if match is not None and len(match.groups()) > 0:
+        return match.groups()[0].lower()
+    else:
+        # No chevrons, return the whole string
+        return email.lower()
